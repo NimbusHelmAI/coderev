@@ -638,7 +638,7 @@ def submit_github_review_verdict(repo, pr_number, verdict, review_summary=""):
         return False
 
 
-def post_github_review_with_verdict(repo, pr_number, review_text):
+def post_github_review_with_verdict(repo, pr_number, review_text, config):
     """Post review comment AND submit formal verdict."""
     if not review_text:
         return False
@@ -649,19 +649,25 @@ def post_github_review_with_verdict(repo, pr_number, review_text):
     
     # Step 1: Post the comment
     try:
-        result = subprocess.run(
-            ['gh', 'pr', 'comment', '--repo', repo, str(pr_number), '--body', review_text],
-            capture_output=True,
-            text=True,
-            env={**os.environ}
-        )
-        if result.returncode == 0:
-            print(f"   ✅ Review comment posted to PR #{pr_number}")
+        github_token = config.get('github', {}).get('reviewer_token')
+        if not github_token:
+            print(f"   No GitHub token in config")
+            return False
+
+        url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+        headers = {
+            "Authorization": f"token {github_token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+
+        response = requests.post(url, json={"body": review_text}, headers=headers, timeout=10)
+        if response.status_code == 201:
+            print(f"   Review comment posted to PR #{pr_number} as sergiorev")
         else:
-            print(f"   ⚠️  Failed to post comment: {result.stderr[:100]}")
+            print(f"   Failed: {response.json()}")
             return False
     except Exception as e:
-        print(f"   ⚠️  Error posting comment: {e}")
+        print(f"   Error: {e}")
         return False
     
     # Step 2: Determine and submit verdict
@@ -742,7 +748,7 @@ def process_github_prs(model, timeout):
                             print(f"      {line}")
                     print(f"      ... (full review in PR comment)")
                     
-                    success = post_github_review_with_verdict(repo, pr_number, review)
+                    success = post_github_review_with_verdict(repo, pr_number, review, config)
                     if not success:
                         print(f"   ⚠️  Review generated but failed to post to GitHub")
                 else:
