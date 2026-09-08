@@ -391,13 +391,69 @@ Please provide your review in the following format:
 [Any performance implications]
 """
 
+def send_chunk_to_ollama(chunk, repo, pr_number, title, model, timeout, platform, chunk_idx, total_chunks):
+    """Send a single chunk to Ollama for review - extracted helper"""
+    prompt = build_review_prompt(
+        chunk, repo, pr_number, title, platform,
+        chunk_idx + 1 if total_chunks > 1 else None,
+        total_chunks if total_chunks > 1 else None
+    )
+    
+    print(f"   🤖 Sending to Ollama ({model})...")
+    
+    try:
+        response = requests.post('http://127.0.0.1:11434/api/generate', 
+                                 json={
+                                     'model': model,
+                                     'prompt': prompt,
+                                     'stream': False,
+                                     'temperature': 0.3
+                                 },
+                                 timeout=timeout)
+        
+        if response.status_code == 200:
+            result = response.json()
+            review = result.get('response', '')
+            print(f"   ✅ Review received ({len(review)} characters)")
+            return review
+        else:
+            print(f"   ❌ Ollama API error: {response.status_code}")
+            return None
+    except requests.exceptions.Timeout:
+        print(f"   ⏱️  Request timed out ({timeout}s)")
+        return None
+    except requests.exceptions.ConnectionError:
+        print(f"   ❌ Cannot connect to Ollama (http://127.0.0.1:11434)")
+        print(f"      Check: docker ps | grep ollama")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"   ❌ Network error: {type(e).__name__}")
+        return None
+    except ValueError as e:
+        print(f"   ❌ Invalid response from Ollama: {e}")
+        return None
+    except Exception as e:
+        print(f"   ❌ Unexpected error: {type(e).__name__}: {str(e)[:80]}")
+        return None
+
+def combine_chunk_reviews(all_reviews, total_chunks):
+    """Combine multiple chunk reviews into single review - extracted helper"""
+    if not all_reviews:
+        return None
+    
+    if len(all_reviews) > 1:
+        combined_review = f"## Code Review Summary (Analyzed {total_chunks} parts)\n\n" + "\n\n---\n\n".join(all_reviews)
+    else:
+        combined_review = all_reviews[0]
+    
+    return combined_review
+
 def review_with_ollama(diff, repo, pr_number, title, model, timeout, platform='github', fallback_model=None):
-    """Send diff to Ollama for review"""
+    """Send diff to Ollama for review - orchestrator using extracted helpers (Commit 7)"""
     if not diff:
         print("   ⚠️  No diff to review")
         return None
     
-    # Ensure Ollama is running
     if not ensure_ollama_running():
         print("   ❌ Ollama not available, skipping review")
         return None
@@ -413,62 +469,21 @@ def review_with_ollama(diff, repo, pr_number, title, model, timeout, platform='g
         if len(chunks) > 1:
             print(f"   📝 Processing chunk {chunk_idx + 1}/{len(chunks)}...")
         
-        prompt = build_review_prompt(
-            chunk, repo, pr_number, title, platform,
-            chunk_idx + 1 if len(chunks) > 1 else None,
-            len(chunks) if len(chunks) > 1 else None
-        )
+        # DELEGATE TO HELPER
+        review = send_chunk_to_ollama(chunk, repo, pr_number, title, model, timeout, platform, chunk_idx, len(chunks))
         
-        print(f"   🤖 Sending to Ollama ({model})...")
-        
-        try:
-            response = requests.post('http://127.0.0.1:11434/api/generate', 
-                                     json={
-                                         'model': model,
-                                         'prompt': prompt,
-                                         'stream': False,
-                                         'temperature': 0.3
-                                     },
-                                     timeout=timeout)
-            
-            if response.status_code == 200:
-                result = response.json()
-                review = result.get('response', '')
-                print(f"   ✅ Review received ({len(review)} characters)")
-                all_reviews.append(review)
-            else:
-                print(f"   ❌ Ollama API error: {response.status_code}")
-                return None
-        except requests.exceptions.Timeout:
-            print(f"   ⏱️  Request timed out ({timeout}s)")
+        if review is None:
             if not fallback_model:
                 print(f"      💡 Retrying with faster model (neural-chat:7b)...")
                 return review_with_ollama(diff, repo, pr_number, title, 'neural-chat:7b', 150, platform, fallback_model='used')
             else:
                 print(f"      Tip: Try a faster model or increase timeout")
                 return None
-        except requests.exceptions.ConnectionError:
-            print(f"   ❌ Cannot connect to Ollama (http://127.0.0.1:11434)")
-            print(f"      Check: docker ps | grep ollama")
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"   ❌ Network error: {type(e).__name__}")
-            return None
-        except ValueError as e:
-            print(f"   ❌ Invalid response from Ollama: {e}")
-            return None
-        except Exception as e:
-            print(f"   ❌ Unexpected error: {type(e).__name__}: {str(e)[:80]}")
-            return None
+        
+        all_reviews.append(review)
     
-    if all_reviews:
-        if len(all_reviews) > 1:
-            combined_review = f"## Code Review Summary (Analyzed {len(chunks)} parts)\n\n" + "\n\n---\n\n".join(all_reviews)
-        else:
-            combined_review = all_reviews[0]
-        return combined_review
-    
-    return None
+    # DELEGATE TO HELPER
+    return combine_chunk_reviews(all_reviews, len(chunks))
 
 # ============================================
 # GITHUB FUNCTIONS
