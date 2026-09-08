@@ -557,15 +557,97 @@ def get_github_pr_diff(repo, pr_number):
     
     return None
 
-def post_github_review_comment(repo, pr_number, review_text):
-    """Post review comment to GitHub PR"""
+def determine_verdict(review_text):
+    """Parse review text to determine if issues were found."""
     if not review_text:
-        return
+        return "COMMENT"
+    
+    review_lower = review_text.lower()
+    
+    # Check for explicit "no issues" patterns
+    no_issues_patterns = [
+        "## Issues Found\nNone",
+        "issues found: none",
+        "no issues found",
+        "no issues detected",
+        "no concerns",
+        "looks good",
+        "approved",
+    ]
+    
+    for pattern in no_issues_patterns:
+        if pattern in review_lower:
+            return "APPROVE"
+    
+    # Check for "Issues Found" section
+    if "## Issues Found" in review_text:
+        start = review_text.find("## Issues Found")
+        end = review_text.find("##", start + 1)
+        if end == -1:
+            end = len(review_text)
+        
+        issues_section = review_text[start:end].strip()
+        
+        if len(issues_section) > len("## Issues Found"):
+            lines = issues_section.split('\n')[1:]
+            content = '\n'.join(lines).strip()
+            if content and content != "None":
+                return "REQUEST_CHANGES"
+    
+    return "COMMENT"
+
+
+def submit_github_review_verdict(repo, pr_number, verdict, review_summary=""):
+    """Submit formal GitHub review verdict."""
+    if verdict not in ["APPROVE", "REQUEST_CHANGES", "COMMENT"]:
+        print(f"   ⚠️  Invalid verdict: {verdict}")
+        return False
+    
+    try:
+        cmd = [
+            'gh', 'pr', 'review', 
+            '--repo', repo, 
+            str(pr_number),
+            f'--{verdict.lower().replace("_", "-")}'
+        ]
+        
+        if verdict == "REQUEST_CHANGES" and review_summary:
+            cmd.extend(['--body', review_summary[:500]])
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env={**os.environ}
+        )
+        
+        if result.returncode == 0:
+            emoji_map = {
+                "APPROVE": "✅",
+                "REQUEST_CHANGES": "⚠️",
+                "COMMENT": "💬"
+            }
+            emoji = emoji_map.get(verdict, "")
+            print(f"   {emoji} Review verdict submitted: {verdict}")
+            return True
+        else:
+            print(f"   ⚠️  Failed to submit verdict: {result.stderr[:100]}")
+            return False
+    except Exception as e:
+        print(f"   ⚠️  Error submitting verdict: {e}")
+        return False
+
+
+def post_github_review_with_verdict(repo, pr_number, review_text):
+    """Post review comment AND submit formal verdict."""
+    if not review_text:
+        return False
     
     max_comment_size = 65000
     if len(review_text) > max_comment_size:
         review_text = review_text[:max_comment_size] + f"\n\n... (truncated, {len(review_text) - max_comment_size} characters omitted)"
     
+    # Step 1: Post the comment
     try:
         result = subprocess.run(
             ['gh', 'pr', 'comment', '--repo', repo, str(pr_number), '--body', review_text],
@@ -575,15 +657,19 @@ def post_github_review_comment(repo, pr_number, review_text):
         )
         if result.returncode == 0:
             print(f"   ✅ Review comment posted to PR #{pr_number}")
-            return True
         else:
             print(f"   ⚠️  Failed to post comment: {result.stderr[:100]}")
             return False
-    except subprocess.CalledProcessError as e:
-        print(f"Error posting comment: {e}")
-        return False
+    except Exception as e:
         print(f"   ⚠️  Error posting comment: {e}")
         return False
+    
+    # Step 2: Determine and submit verdict
+    verdict = determine_verdict(review_text)
+    submit_github_review_verdict(repo, pr_number, verdict, review_text[:200])
+    
+    return True
+
 
 def process_github_prs(model, timeout):
     """Main function to process GitHub PRs"""
@@ -656,7 +742,7 @@ def process_github_prs(model, timeout):
                             print(f"      {line}")
                     print(f"      ... (full review in PR comment)")
                     
-                    success = post_github_review_comment(repo, pr_number, review)
+                    success = post_github_review_with_verdict(repo, pr_number, review)
                     if not success:
                         print(f"   ⚠️  Review generated but failed to post to GitHub")
                 else:
