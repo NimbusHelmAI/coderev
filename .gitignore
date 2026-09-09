@@ -1,1 +1,14 @@
 config.yml
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Backups
+*.backup
+*.before_*
+*.bad.*
+
+# Config (secrets)
+config.yml
