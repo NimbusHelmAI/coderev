@@ -597,44 +597,44 @@ def determine_verdict(review_text):
     return "COMMENT"
 
 
-def submit_github_review_verdict(repo, pr_number, verdict, review_summary=""):
-    """Submit formal GitHub review verdict."""
+def submit_github_review_verdict(repo, pr_number, verdict, review_summary="", config=None):
+    """Submit formal GitHub review verdict via GitHub API as sergiorev."""
     if verdict not in ["APPROVE", "REQUEST_CHANGES", "COMMENT"]:
-        print(f"   ⚠️  Invalid verdict: {verdict}")
         return False
     
+    if not config:
+        return False
+    
+    github_token = config.get('github', {}).get('reviewer_token')
+    if not github_token:
+        return False
+    
+    # Map verdict to GitHub API event
+    event_map = {"APPROVE": "APPROVE", "REQUEST_CHANGES": "REQUEST_CHANGES", "COMMENT": "COMMENT"}
+    event = event_map.get(verdict)
+    
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    
     try:
-        cmd = [
-            'gh', 'pr', 'review', 
-            '--repo', repo, 
-            str(pr_number),
-            f'--{verdict.lower().replace("_", "-")}'
-        ]
-        
-        if verdict == "REQUEST_CHANGES" and review_summary:
-            cmd.extend(['--body', review_summary[:500]])
-        
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            env={**os.environ}
+        response = requests.post(
+            url,
+            json={"event": event, "body": review_summary[:500] if review_summary else ""},
+            headers=headers,
+            timeout=10
         )
         
-        if result.returncode == 0:
-            emoji_map = {
-                "APPROVE": "✅",
-                "REQUEST_CHANGES": "⚠️",
-                "COMMENT": "💬"
-            }
-            emoji = emoji_map.get(verdict, "")
-            print(f"   {emoji} Review verdict submitted: {verdict}")
+        if response.status_code == 200:
+            print(f"   Verdict submitted as sergiorev: {verdict}")
             return True
         else:
-            print(f"   ⚠️  Failed to submit verdict: {result.stderr[:100]}")
+            print(f"   Failed to submit verdict: {response.json()}")
             return False
     except Exception as e:
-        print(f"   ⚠️  Error submitting verdict: {e}")
+        print(f"   Error submitting verdict: {e}")
         return False
 
 
@@ -672,7 +672,7 @@ def post_github_review_with_verdict(repo, pr_number, review_text, config):
     
     # Step 2: Determine and submit verdict
     verdict = determine_verdict(review_text)
-    submit_github_review_verdict(repo, pr_number, verdict, review_text[:200])
+    submit_github_review_verdict(repo, pr_number, verdict, review_text[:200], config)
     
     return True
 
